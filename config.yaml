@@ -1,0 +1,17 @@
+# LM Studio API（OpenAI兼容）
+api_base: "http://127.0.0.1:1234/v1"
+model: "glm-ocr"
+api_key: "lm-studio"
+
+# 项目内相对路径
+watch_dir: "screenshots"
+archive_dir: "screenshots/archive"
+log_dir: "logs"
+holdings_md: "holdings.md"
+holdings_csv: "holdings.csv"
+state_file: "state.json"
+
+# 归档上限
+archive_max: 30
+# 扫描间隔（秒）
+scan_interval: 10

@@ -1,0 +1,7 @@
+screenshots/
+logs/
+state.json
+holdings.md
+holdings.csv
+__pycache__/
+*.pyc
