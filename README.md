@@ -10,7 +10,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 2. 配置 LM Studio
+## 2. 配置模型接口（LM Studio / OpenCloud）
 
 先复制模板配置：
 
@@ -18,36 +18,34 @@ pip install -r requirements.txt
 cp config.yaml.template config.yaml
 ```
 
-1. 启动 LM Studio，并加载支持图像输入的本地模型（默认示例：`qwen3-vl-2b-instruct`）。
-2. 开启本地 API Server（OpenAI Compatible），默认地址一般是 `http://127.0.0.1:1234`。
-3. 在 LM Studio 里配置好系统提示词和 JSON Schema（本项目默认依赖服务端提示词）。
-4. 检查 `config.yaml`：
+1. 使用 LM Studio 本地模型时，开启 OpenAI Compatible API（默认 `http://127.0.0.1:1234`）。
+2. 使用 OpenCloud 时，填写 OpenAI 兼容地址（示例：`https://api.opencloud.com/v1`）。
+3. 根据所用服务检查 `config.yaml`：
 
 ```yaml
-api_base: "http://127.0.0.1:1234/v1"
+api_base: "http://127.0.0.1:1234/v1" # LM Studio 本地地址
+# api_base: "https://api.opencloud.com/v1" # OpenCloud 地址
 model: "qwen3-vl-2b-instruct"
-# 可选：仅服务端要求鉴权时配置
+# 仅服务端要求鉴权时配置
 # api_key: "your-key"
-
-# 示例：截图目录可用绝对路径
-# watch_dir: "/Users/Lyz/Nutstore Files/openclaw桌面/投资管理/截图"
 ```
 
 ## 3. 配置 `config.yaml`
 
-复制 `config.yaml.template` 为 `config.yaml`，并根据你的实际情况修改 `config.yaml` 中的路径配置。
+复制 `config.yaml.template` 为 `config.yaml`，按需修改路径配置。
 
 ```bash
 cp config.yaml.template config.yaml
 ```
 
-**注意**：`watch_dir`、`holdings_md`、`holdings_csv`、`state_file` 建议使用**绝对路径**，以避免隐私泄露和路径混淆。例如：
+路径字段说明：
 
 ```yaml
-watch_dir: "/Users/你的用户名/Nutstore Files/openclaw桌面/投资管理/截图"
-holdings_md: "/Users/你的用户名/Nutstore Files/openclaw桌面/投资管理/holdings.md"
-holdings_csv: "/Users/你的用户名/Nutstore Files/openclaw桌面/投资管理/holdings.csv"
-state_file: "/Users/你的用户名/Nutstore Files/openclaw桌面/投资管理/state.json"
+watch_dir: "screenshots"               # 待识别图片目录
+archive_dir: "screenshots/archive"     # 归档目录
+holdings_md: "/path/to/holdings.md"    # 持仓 Markdown 文件
+holdings_csv: "/path/to/holdings.csv"  # 持仓 CSV 文件
+state_file: "/path/to/state.json"      # 去重状态文件
 ```
 
 ## 4. 初始化目录和文件
