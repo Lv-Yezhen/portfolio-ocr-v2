@@ -14,13 +14,60 @@ def get_project_root() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _load_prompt() -> str:
-    prompt_path = os.path.join(get_project_root(), "prompt.txt")
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+EXPECTED_KEYS = [
+    "code",
+    "name",
+    "total_amount",
+    "hold_amount",
+    "pending_amount",
+    "cost_price",
+    "shares",
+    "daily_profit",
+    "hold_profit",
+    "hold_rate",
+    "daily_change",
+    "nav",
+    "nav_date",
+    "transactions",
+]
+
+KEY_ALIASES = {
+    "code": ["code", "fund_code", "基金代码", "代码"],
+    "name": ["name", "fund_name", "基金名称", "名称"],
+    "total_amount": ["total_amount", "total", "总金额", "总资产", "总市值"],
+    "hold_amount": ["hold_amount", "holding_amount", "持有金额", "持仓金额"],
+    "pending_amount": ["pending_amount", "pending", "待确认金额"],
+    "cost_price": ["cost_price", "cost", "持仓成本价", "成本价"],
+    "shares": ["shares", "hold_shares", "holding_shares", "持有份额", "份额"],
+    "daily_profit": ["daily_profit", "today_profit", "昨日收益", "今日收益", "日收益"],
+    "hold_profit": ["hold_profit", "acc_profit", "累计收益", "持有收益"],
+    "hold_rate": ["hold_rate", "yield_rate", "收益率", "持有收益率"],
+    "daily_change": ["daily_change", "day_change", "日涨幅", "涨跌幅"],
+    "nav": ["nav", "latest_nav", "净值", "最新净值"],
+    "nav_date": ["nav_date", "净值日期", "估值日期"],
+    "transactions": ["transactions", "待确认交易", "pending_transactions"],
+}
 
 
 def _image_to_data_url(image_path: str) -> str:
+    ext = os.path.splitext(image_path)[1].lower()
+    mime_by_ext = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".gif": "image/gif",
+    }
+    mime = mime_by_ext.get(ext, "image/jpeg")
+
+    # 尽量保留原始格式与清晰度，避免重编码导致小字识别变差。
+    if mime != "image/jpeg":
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        encoded = base64.b64encode(image_bytes).decode("utf-8")
+        return f"data:{mime};base64,{encoded}"
+
     with Image.open(image_path) as img:
         rgb_img = img.convert("RGB")
         buffer = io.BytesIO()
@@ -62,37 +109,185 @@ def _parse_json_content(content: str, logger: logging.Logger) -> Optional[Dict[s
         return None
 
 
-def extract_from_image(image_path: str, config: Dict[str, Any], logger: logging.Logger) -> Optional[Dict[str, Any]]:
-    try:
-        data_url = _image_to_data_url(image_path)
-        endpoint = f"{str(config['api_base']).rstrip('/')}/chat/completions"
+def _pick_value(payload: Dict[str, Any], aliases: list) -> Any:
+    for key in aliases:
+        if key in payload:
+            return payload.get(key)
+    return None
 
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
-        }
 
-        # 提示词已在LM Studio中配置，这里只发图片
-        payload = {
-            "model": config.get("model", "glm-ocr"),
+def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # 有些模型会把真正字段包在 data/result 字段内，先尝试扁平化一层。
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        source = nested
+    else:
+        nested = payload.get("result")
+        source = nested if isinstance(nested, dict) else payload
+
+    normalized: Dict[str, Any] = {}
+    for key in EXPECTED_KEYS:
+        value = _pick_value(source, KEY_ALIASES.get(key, [key]))
+        normalized[key] = value
+
+    code = normalized.get("code")
+    normalized["code"] = str(code).strip() if code is not None else ""
+
+    name = normalized.get("name")
+    normalized["name"] = str(name).strip() if name is not None else ""
+
+    tx = normalized.get("transactions")
+    if tx is None:
+        normalized["transactions"] = []
+    elif isinstance(tx, list):
+        normalized["transactions"] = tx
+    else:
+        normalized["transactions"] = [tx]
+
+    return normalized
+
+
+def _build_payload_variants(model: str, text_prompt: str, data_url: str) -> list:
+    # 不同模型/网关对多模态字段兼容性不同，按常见格式依次尝试。
+    return [
+        {
+            "model": model,
             "temperature": 0,
             "messages": [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "请提取这张基金截图的数据，严格以JSON输出。"},
+                        {"type": "text", "text": text_prompt},
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
-                },
+                }
             ],
-        }
+        },
+        {
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": text_prompt},
+                        {"type": "image_url", "image_url": data_url},
+                    ],
+                }
+            ],
+        },
+        {
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": text_prompt,
+                }
+            ],
+            "images": [data_url],
+        },
+    ]
 
+
+def _call_lm(
+    endpoint: str,
+    headers: Dict[str, str],
+    model: str,
+    text_prompt: str,
+    data_url: str,
+    logger: logging.Logger,
+) -> Optional[Dict[str, Any]]:
+    payload_variants = _build_payload_variants(
+        model=model,
+        text_prompt=text_prompt,
+        data_url=data_url,
+    )
+
+    response = None
+    last_error = ""
+    for idx, payload in enumerate(payload_variants):
         response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
-        if response.status_code != 200:
-            logger.error("调用LM Studio失败: status=%s body=%s", response.status_code, response.text[:500])
-            return None
+        if response.status_code == 200:
+            if idx > 0:
+                logger.info("LM请求已切换到兼容格式 #%s", idx + 1)
+            break
+        last_error = response.text[:500]
+        if "must be a string" in last_error or "iterating prediction stream" in last_error:
+            continue
+        continue
 
-        result = response.json()
+    if response is None or response.status_code != 200:
+        status = response.status_code if response is not None else "N/A"
+        logger.error("调用LM Studio失败: status=%s body=%s", status, last_error)
+        return None
+
+    return response.json()
+
+
+def _is_low_confidence_result(payload: Dict[str, Any]) -> bool:
+    important_keys = [
+        "hold_amount",
+        "pending_amount",
+        "cost_price",
+        "shares",
+        "daily_profit",
+        "hold_profit",
+        "hold_rate",
+        "daily_change",
+        "nav",
+        "nav_date",
+    ]
+    filled = sum(1 for key in important_keys if payload.get(key) not in (None, "", "-"))
+    # 名称和总金额有了但核心字段几乎全空，通常是OCR错位，触发一次重试。
+    return bool(payload.get("name")) and payload.get("total_amount") is not None and filled <= 1
+
+
+def _has_transaction_amounts(payload: Dict[str, Any]) -> bool:
+    tx = payload.get("transactions")
+    if not isinstance(tx, list):
+        return False
+    for item in tx:
+        if isinstance(item, dict) and item.get("amount") not in (None, "", "-"):
+            return True
+    return False
+
+
+def _should_reject_result(payload: Dict[str, Any]) -> bool:
+    # 典型错位：主字段几乎全空，但 transactions 填了金额。
+    key_values = [
+        payload.get("daily_profit"),
+        payload.get("hold_profit"),
+        payload.get("hold_rate"),
+        payload.get("nav"),
+        payload.get("nav_date"),
+    ]
+    key_empty = all(v in (None, "", "-") for v in key_values)
+    return _is_low_confidence_result(payload) and key_empty and _has_transaction_amounts(payload)
+
+
+def extract_from_image(image_path: str, config: Dict[str, Any], logger: logging.Logger) -> Optional[Dict[str, Any]]:
+    try:
+        data_url = _image_to_data_url(image_path)
+        endpoint = f"{str(config['api_base']).rstrip('/')}/chat/completions"
+
+        headers = {"Content-Type": "application/json"}
+        api_key = str(config.get("api_key", "")).strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        model = str(config.get("model", "glm-ocr"))
+        text_prompt = "请按已配置规则提取图片信息并返回JSON。"
+        result = _call_lm(
+            endpoint=endpoint,
+            headers=headers,
+            model=model,
+            text_prompt=text_prompt,
+            data_url=data_url,
+            logger=logger,
+        )
+        if result is None:
+            return None
         choices = result.get("choices", [])
         if not choices:
             logger.error("LM Studio返回中缺少choices")
@@ -114,7 +309,57 @@ def extract_from_image(image_path: str, config: Dict[str, Any], logger: logging.
         if not isinstance(content, str):
             content = str(content)
 
-        return _parse_json_content(content, logger)
+        parsed = _parse_json_content(content, logger)
+        if parsed is None:
+            logger.error("VLM原始返回片段: %s", content[:500])
+            return None
+
+        if isinstance(parsed, dict) and "error" in parsed and len(parsed.keys()) <= 2:
+            logger.error("VLM返回错误对象: %s", parsed.get("error"))
+            return None
+
+        normalized = _normalize_payload(parsed)
+        if not normalized.get("code"):
+            logger.warning("识别结果缺少code，原始JSON键: %s", list(parsed.keys()))
+        elif _is_low_confidence_result(normalized):
+            logger.warning("识别结果疑似错位，触发一次重试: %s", os.path.basename(image_path))
+            retry_prompt = "请重新识别，确保收益/净值字段不要写入transactions。无待确认交易时transactions返回空数组。"
+            retry_result = _call_lm(
+                endpoint=endpoint,
+                headers=headers,
+                model=model,
+                text_prompt=retry_prompt,
+                data_url=data_url,
+                logger=logger,
+            )
+            if retry_result:
+                retry_choices = retry_result.get("choices", [])
+                if retry_choices:
+                    retry_message = retry_choices[0].get("message", {})
+                    retry_content = retry_message.get("content", "")
+                    if isinstance(retry_content, list):
+                        parts = []
+                        for item in retry_content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                parts.append(str(item.get("text", "")))
+                            else:
+                                parts.append(str(item))
+                        retry_content = "\n".join(parts)
+                    if not isinstance(retry_content, str):
+                        retry_content = str(retry_content)
+                    retry_parsed = _parse_json_content(retry_content, logger)
+                    if isinstance(retry_parsed, dict) and "error" not in retry_parsed:
+                        retry_normalized = _normalize_payload(retry_parsed)
+                        if not _is_low_confidence_result(retry_normalized):
+                            normalized = retry_normalized
+
+        if _should_reject_result(normalized):
+            logger.error(
+                "识别结果疑似字段错位，已拒绝写入（请调整模型/preset）: %s",
+                os.path.basename(image_path),
+            )
+            return None
+        return normalized
     except Exception:
         logger.exception("extract_from_image执行异常: image=%s", image_path)
         return None

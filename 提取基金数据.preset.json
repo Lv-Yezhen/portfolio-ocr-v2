@@ -1,0 +1,167 @@
+{
+  "identifier": "@local:",
+  "importedTimeStamp": 1776737419181,
+  "name": "提取基金数据",
+  "operation": {
+    "fields": [
+      {
+        "key": "llm.prediction.systemPrompt",
+        "value": "Role: 基金 APP 截图数据提取器专家\nTask: 识别并提取截图中显示的基金持仓关键数据，并严格按照提供的 JSON Schema 格式化输出。\n\nOperational Rules:\n\n纯净输出：禁止输出任何 Markdown 标记（如 ```json）、解释、开场白或结尾语。仅输出合法的 JSON 字符串。\n\n数据完整性：\n\n严禁编造、推理或猜测数据。\n\n若截图中未出现某字段，统一填入 null；仅当截图明确无待确认交易时，transactions 返回空数组 []。\n\n格式约束：\n\n金额/数值：移除千分位逗号（如 1,234.56 转换为 1234.56），保留 2 位小数。\n\n百分比：保留符号（如 + 或 -），以字符串格式输出，示例：+4.83%。\n\n基金代码：固定为 6 位数字字符串。\n\n逻辑区分：\n\n务必区分“持有收益”（累计收益）与“今日收益”（单日变动金额）。\n\n“待确认金额”通常指正在交易中但未计入持仓的资金。\n\n严禁错位映射：\n\ndaily_profit / hold_profit / hold_rate / daily_change / nav / nav_date 只能来自对应字段，不得写入 transactions。\n\ntransactions 仅提取“待确认交易”区域；若截图未出现该区域或未出现交易项，返回空数组。"
+      },
+      {
+        "key": "llm.prediction.structured",
+        "value": {
+          "type": "json",
+          "jsonSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9]{6}$",
+                "description": "6位基金代码"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "基金完整名称"
+              },
+              "total_amount": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "总金额（元）"
+              },
+              "hold_amount": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "持有金额（元）"
+              },
+              "pending_amount": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "待确认金额（元）"
+              },
+              "cost_price": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "持仓/持有成本价"
+              },
+              "shares": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "持有份额"
+              },
+              "daily_profit": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "今日收益（元）"
+              },
+              "hold_profit": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "持有收益（元）"
+              },
+              "hold_rate": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "持有收益率，带正负号百分数"
+              },
+              "daily_change": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "日涨幅，带正负号百分数"
+              },
+              "nav": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "最新单位净值"
+              },
+              "nav_date": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "净值更新日期 (MM-DD)"
+              },
+              "transactions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "买入",
+                        "卖出",
+                        "未知",
+                        null
+                      ]
+                    },
+                    "amount": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "expected_date": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "description": "待确认交易列表"
+              }
+            },
+            "required": [
+              "code",
+              "name",
+              "total_amount",
+              "hold_amount",
+              "pending_amount",
+              "cost_price",
+              "shares",
+              "daily_profit",
+              "hold_profit",
+              "hold_rate",
+              "daily_change",
+              "nav",
+              "nav_date",
+              "transactions"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "load": {
+    "fields": []
+  }
+}

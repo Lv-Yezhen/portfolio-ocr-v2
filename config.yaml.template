@@ -1,0 +1,20 @@
+# LM Studio API（OpenAI兼容）
+api_base: "http://127.0.0.1:1234/v1"
+model: "qwen/qwen3-vl-4b"
+# 可选：只有你的服务端要求鉴权时才需要
+# api_key: "your-key"
+
+# 项目内相对路径
+watch_dir: "screenshots" # 截图存放目录，可以是相对路径或绝对路径
+archive_dir: "screenshots/archive" # 已处理截图归档目录，可以是相对路径或绝对路径
+log_dir: "logs" # 日志文件存放目录，可以是相对路径或绝对路径
+
+# 以下路径建议使用绝对路径，以避免隐私泄露和路径混淆
+holdings_md: "/path/to/your/holdings.md" # Markdown 格式持仓文件
+holdings_csv: "/path/to/your/holdings.csv" # CSV 格式持仓文件
+state_file: "/path/to/your/state.json" # 状态文件，记录已处理截图的哈希值
+
+# 归档上限
+archive_max: 30
+# 扫描间隔（秒）
+scan_interval: 10

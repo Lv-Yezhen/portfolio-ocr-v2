@@ -28,7 +28,8 @@ def load_config() -> Dict[str, Any]:
 
 
 def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    return os.path.join(get_project_root(), str(config[key]))
+    value = str(config[key])
+    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
 
 
 def init_logger(config: Dict[str, Any]) -> logging.Logger:

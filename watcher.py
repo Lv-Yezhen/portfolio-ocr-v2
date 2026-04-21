@@ -19,7 +19,8 @@ def get_project_root() -> str:
 
 
 def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    return os.path.join(get_project_root(), str(config[key]))
+    value = str(config[key])
+    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
 
 
 def _sha256(file_path: str) -> str:
@@ -131,15 +132,22 @@ def process_new_images(config: Dict[str, Any], logger: logging.Logger) -> int:
 
             if image_hash in seen_hashes:
                 logger.info("重复截图，跳过识别: %s", image_path)
-            else:
-                result = extract_from_image(image_path=image_path, config=config, logger=logger)
-                if result is None:
-                    logger.error("OCR失败: %s", image_path)
-                else:
-                    update_holdings(data=result, config=config, logger=logger, source_image=image_path)
-                seen_hashes.add(image_hash)
-                processed_count += 1
+                archived = _archive_file(image_path, archive_dir)
+                logger.info("已归档: %s", archived)
+                continue
 
+            result = extract_from_image(image_path=image_path, config=config, logger=logger)
+            if result is None:
+                logger.error("OCR失败，保留文件待重试: %s", image_path)
+                continue
+
+            updated = update_holdings(data=result, config=config, logger=logger, source_image=image_path)
+            if not updated:
+                logger.error("持仓更新失败，保留文件待重试: %s", image_path)
+                continue
+
+            seen_hashes.add(image_hash)
+            processed_count += 1
             archived = _archive_file(image_path, archive_dir)
             logger.info("已归档: %s", archived)
         except Exception:

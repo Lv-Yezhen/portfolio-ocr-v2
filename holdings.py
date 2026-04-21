@@ -30,7 +30,8 @@ def get_project_root() -> str:
 
 
 def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    return os.path.join(get_project_root(), str(config[key]))
+    value = str(config[key])
+    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
 
 
 def _to_float(value: Any) -> Any:
@@ -138,7 +139,7 @@ def _write_markdown(path: str, rows: Dict[str, Dict[str, str]]) -> None:
 
 
 def _append_history(config: Dict[str, Any], data: Dict[str, Any], source_image: str, updated_at: str) -> None:
-    history_path = os.path.join(get_project_root(), str(config["log_dir"]), "ocr_history.md")
+    history_path = os.path.join(_resolve_path(config, "log_dir"), "ocr_history.md")
     _ensure_parent(history_path)
 
     if not os.path.exists(history_path):

@@ -5,3 +5,15 @@ holdings.md
 holdings.csv
 __pycache__/
 *.pyc
+.DS_Store
+.venv/
+.python-version
+.env
+.env.*
+.vscode/
+.idea/
+*.log
+*.swp
+*.swo
+Thumbs.db
+config.yaml
