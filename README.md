@@ -83,7 +83,23 @@ mac 双击脚本启动/停止（`.command`）：
 python main.py --once
 ```
 
-处理当前目录下待处理截图后退出。
+处理当前目录下待处理截图后退出（同时执行待确认交易自动确认与图表更新）。
+
+### 手动生成图表
+
+```bash
+python main.py --chart
+```
+
+从 `data/daily_ops.csv` 重新生成 `charts/chart_{code}.png`。
+
+### 清空持仓并重建
+
+```bash
+python main.py --reset
+```
+
+会清空 `holdings.md` / `holdings.csv` / `state.json` / `data/transactions.json` / `data/daily_ops.csv` 以及 `charts/*.png`，用于从零重建仓位追踪。
 
 ### 单图测试模式
 
@@ -105,6 +121,10 @@ python main.py --test screenshots/example.jpg
   - 覆盖更新 `holdings.md`（每个基金仅保留最新一条）
   - 覆盖更新 `holdings.csv`（每个基金仅一行）
   - 追加写入 `logs/ocr_history.md` 历史记录
+- 交易追踪会：
+  - 维护 `data/transactions.json` 时间线与 `pending_transactions`
+  - 追加写入 `data/daily_ops.csv` 每日操作报表
+  - 在 `--once/--watch/--chart` 下生成或更新 `charts/*.png` 趋势图
 - 已处理截图会移动到 `screenshots/archive/`，超过 `archive_max` 自动滚动删除旧文件。
 - 如果 OCR 或写入失败，截图会保留在 `screenshots/`，便于修复后重试。
 

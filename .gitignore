@@ -1,5 +1,7 @@
 screenshots/
 logs/
+data/
+charts/
 state.json
 holdings.md
 holdings.csv

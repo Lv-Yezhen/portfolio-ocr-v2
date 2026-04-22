@@ -18,3 +18,9 @@ state_file: "/path/to/your/state.json" # 状态文件，记录已处理截图的
 archive_max: 30
 # 扫描间隔（秒）
 scan_interval: 10
+
+# 交易追踪与图表
+data_dir: "data"
+chart_dir: "charts"
+nav_confirm_hour: 21
+delta_threshold: 10

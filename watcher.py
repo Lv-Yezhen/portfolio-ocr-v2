@@ -7,8 +7,10 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Set
 
+from chart import generate_charts
 from extractor import extract_from_image
 from holdings import update_holdings
+from portfolio import check_pending_confirmations
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -120,38 +122,36 @@ def process_new_images(config: Dict[str, Any], logger: logging.Logger) -> int:
     seen_hashes: Set[str] = set(state.get("processed_hashes", []))
     files = _scan_top_images(watch_dir)
 
+    processed_count = 0
     if not files:
         logger.debug("未发现新截图")
-        return 0
+    else:
+        for image_path in files:
+            try:
+                image_hash = _sha256(image_path)
 
-    processed_count = 0
+                if image_hash in seen_hashes:
+                    logger.info("重复截图，跳过识别: %s", image_path)
+                    archived = _archive_file(image_path, archive_dir)
+                    logger.info("已归档: %s", archived)
+                    continue
 
-    for image_path in files:
-        try:
-            image_hash = _sha256(image_path)
+                result = extract_from_image(image_path=image_path, config=config, logger=logger)
+                if result is None:
+                    logger.error("OCR失败，保留文件待重试: %s", image_path)
+                    continue
 
-            if image_hash in seen_hashes:
-                logger.info("重复截图，跳过识别: %s", image_path)
+                updated = update_holdings(data=result, config=config, logger=logger, source_image=image_path)
+                if not updated:
+                    logger.error("持仓更新失败，保留文件待重试: %s", image_path)
+                    continue
+
+                seen_hashes.add(image_hash)
+                processed_count += 1
                 archived = _archive_file(image_path, archive_dir)
                 logger.info("已归档: %s", archived)
-                continue
-
-            result = extract_from_image(image_path=image_path, config=config, logger=logger)
-            if result is None:
-                logger.error("OCR失败，保留文件待重试: %s", image_path)
-                continue
-
-            updated = update_holdings(data=result, config=config, logger=logger, source_image=image_path)
-            if not updated:
-                logger.error("持仓更新失败，保留文件待重试: %s", image_path)
-                continue
-
-            seen_hashes.add(image_hash)
-            processed_count += 1
-            archived = _archive_file(image_path, archive_dir)
-            logger.info("已归档: %s", archived)
-        except Exception:
-            logger.exception("处理文件失败: %s", image_path)
+            except Exception:
+                logger.exception("处理文件失败: %s", image_path)
 
     state["processed_hashes"] = list(seen_hashes)
     _save_state(state_path, state)
@@ -161,6 +161,9 @@ def process_new_images(config: Dict[str, Any], logger: logging.Logger) -> int:
         max_keep=int(config.get("archive_max", 30)),
         logger=logger,
     )
+    pending_changed = check_pending_confirmations(config=config, logger=logger)
+    if processed_count > 0 or pending_changed:
+        generate_charts(config=config, logger=logger)
     return processed_count
 
 

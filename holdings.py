@@ -5,6 +5,8 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List
 
+from portfolio import record_snapshot
+
 
 CSV_HEADERS = [
     "代码",
@@ -200,6 +202,7 @@ def update_holdings(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
         _write_csv(csv_path, rows)
         _write_markdown(md_path, rows)
         _append_history(config, data, source_image=source_image, updated_at=updated_at)
+        record_snapshot(data=data, config=config, logger=logger, source_image=source_image)
 
         logger.info("持仓已更新: %s %s", rows[code].get("名称"), code)
         return True
