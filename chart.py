@@ -96,6 +96,11 @@ def generate_charts(config: Dict[str, Any], logger: logging.Logger) -> bool:
     active_codes = set()
     for code, items in grouped.items():
         items.sort(key=lambda x: _date_sort_key(str(x.get("日期") or "")))
+        deduped_items: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            day = str(item.get("日期") or "")
+            deduped_items[day] = item
+        items = sorted(deduped_items.values(), key=lambda x: _date_sort_key(str(x.get("日期") or "")))
         meta = fund_meta.get(code) if isinstance(fund_meta.get(code), dict) else {}
         is_sold_out = bool(meta.get("is_sold_out")) if isinstance(meta, dict) else False
         chart_path = os.path.join(chart_dir, f"chart_{code}.png")

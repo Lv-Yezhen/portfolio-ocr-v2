@@ -180,22 +180,40 @@ def _build_timeline_entry(
     }
 
 
-def _match_pending_transaction(
+def _date_gap_days(left: str, right: str) -> int:
+    try:
+        left_dt = datetime.strptime(left, "%Y-%m-%d")
+        right_dt = datetime.strptime(right, "%Y-%m-%d")
+        return abs((left_dt - right_dt).days)
+    except Exception:
+        return 9999
+
+
+def _find_pending_transaction(
     pending_transactions: List[Dict[str, Any]],
     op_type: str,
     delta_amount: float,
     threshold: float,
-) -> bool:
+    snapshot_date: str,
+) -> Optional[Dict[str, Any]]:
     tolerance = max(float(threshold), 10.0)
     target = abs(float(delta_amount))
+    matched: Optional[Dict[str, Any]] = None
+    best_key: Optional[Tuple[int, str, str]] = None
     for tx in pending_transactions:
         if str(tx.get("status", "pending")) != "pending":
             continue
         tx_type = str(tx.get("type", "")).strip()
         tx_amount = _to_float(tx.get("amount"), default=-1)
-        if tx_type == op_type and tx_amount >= 0 and abs(tx_amount - target) <= tolerance:
-            return True
-    return False
+        if tx_type != op_type or tx_amount < 0 or abs(tx_amount - target) > tolerance:
+            continue
+        expected_date = str(tx.get("expected_date") or "")
+        date_gap = _date_gap_days(snapshot_date, expected_date)
+        sort_key = (date_gap, expected_date, str(tx.get("added_date") or ""))
+        if best_key is None or sort_key < best_key:
+            matched = tx
+            best_key = sort_key
+    return matched
 
 
 def _normalize_pending_transactions(
@@ -270,13 +288,21 @@ def record_snapshot(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
     delta_threshold = float(config.get("delta_threshold", 10))
     op_type = "修正"
     delta_amount = 0.0
+    matched_tx: Optional[Dict[str, Any]] = None
     if timeline:
         prev = timeline[-1]
         prev_hold_amount = _to_float(prev.get("hold_amount"), 0.0)
         delta = hold_amount - prev_hold_amount
         if abs(delta) > delta_threshold:
             likely_type = "买入" if delta > 0 else "卖出"
-            if _match_pending_transaction(pending_transactions, likely_type, abs(delta), delta_threshold):
+            matched_tx = _find_pending_transaction(
+                pending_transactions,
+                likely_type,
+                abs(delta),
+                delta_threshold,
+                date,
+            )
+            if matched_tx is not None:
                 op_type = likely_type
                 delta_amount = abs(delta)
             else:
@@ -307,6 +333,10 @@ def record_snapshot(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
         cumulative_profit=cumulative_profit,
         source="ocr",
     )
+    if matched_tx is not None:
+        matched_tx["status"] = "confirmed"
+        matched_tx["confirmed_date"] = _now_date()
+        matched_tx["confirm_source"] = "ocr_screenshot"
 
     extra_pending = _normalize_pending_transactions(data.get("transactions"), source_image=source_image)
     pending_transactions = _dedup_pending(pending_transactions, extra_pending)
@@ -314,7 +344,15 @@ def record_snapshot(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
     fund["name"] = str(data.get("name") or fund.get("name") or "").strip()
     fund["timeline"] = timeline
     fund["pending_transactions"] = pending_transactions
-    fund["is_sold_out"] = _is_sold_out(hold_amount, shares)
+    has_pending_buy = any(
+        str(tx.get("type")) == "买入" and str(tx.get("status")) == "pending"
+        for tx in pending_transactions
+        if isinstance(tx, dict)
+    )
+    fund["is_sold_out"] = _is_sold_out(hold_amount, shares) and not has_pending_buy
+    if fund["is_sold_out"] and (hold_amount > 0 or shares > 0):
+        fund["is_sold_out"] = False
+        logger.info("修正 is_sold_out 标记: %s", code)
     all_data[code] = fund
     _save_transactions(config, all_data)
     logger.info("已记录快照: %s %s (%s)", fund["name"], code, op_type)
@@ -385,6 +423,13 @@ def check_pending_confirmations(config: Dict[str, Any], logger: logging.Logger) 
                 fail_count = int(tx.get("failed_days", 0)) + 1
                 tx["failed_days"] = fail_count
                 tx["last_check_date"] = _now_date()
+                if fail_count >= 10:
+                    tx["status"] = "expired"
+                    tx["expired_date"] = _now_date()
+                    tx["expire_reason"] = "nav_unavailable_10_days"
+                    logger.warning("待确认交易已过期(连续失败>=10天): code=%s type=%s date=%s", code, tx_type, expected_date)
+                    need_save = True
+                    continue
                 if fail_count >= 3:
                     logger.warning("待确认交易连续失败>=3天: code=%s type=%s date=%s", code, tx_type, expected_date)
                 need_save = True
@@ -419,7 +464,15 @@ def check_pending_confirmations(config: Dict[str, Any], logger: logging.Logger) 
             )
             tx["status"] = "confirmed"
             tx["confirmed_date"] = _now_date()
-            fund["is_sold_out"] = _is_sold_out(new_hold_amount, new_shares)
+            has_pending_buy = any(
+                str(p.get("type")) == "买入" and str(p.get("status")) == "pending"
+                for p in pending_transactions
+                if isinstance(p, dict)
+            )
+            fund["is_sold_out"] = _is_sold_out(new_hold_amount, new_shares) and not has_pending_buy
+            if fund["is_sold_out"] and (new_hold_amount > 0 or new_shares > 0):
+                fund["is_sold_out"] = False
+                logger.info("修正 is_sold_out 标记: %s", code)
             data_changed = True
             need_save = True
             logger.info("已自动确认交易: %s %s %s %.2f", code, tx_type, expected_date, amount)
