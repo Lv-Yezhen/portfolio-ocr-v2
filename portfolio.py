@@ -2,7 +2,7 @@ import csv
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from nav_api import get_nav
@@ -113,9 +113,38 @@ def _load_transactions(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _save_transactions(config: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    cutoff = (datetime.now() - timedelta(days=90)).date()
+    cleaned: Dict[str, Any] = {}
+    for code, fund in payload.items():
+        if not isinstance(fund, dict):
+            cleaned[code] = fund
+            continue
+        timeline = _ensure_dict_list(fund.get("timeline"))
+        kept: List[Dict[str, Any]] = []
+        for item in timeline:
+            text = str(item.get("date") or "").strip()
+            try:
+                date_value = datetime.strptime(text, "%Y-%m-%d").date()
+            except Exception:
+                kept.append(item)
+                continue
+            if date_value >= cutoff:
+                kept.append(item)
+        if not kept and timeline:
+            def _timeline_sort_key(row: Dict[str, Any]) -> datetime:
+                try:
+                    return datetime.strptime(str(row.get("date") or ""), "%Y-%m-%d")
+                except Exception:
+                    return datetime.min
+
+            kept = [max(timeline, key=_timeline_sort_key)]
+        new_fund = dict(fund)
+        new_fund["timeline"] = kept
+        cleaned[code] = new_fund
+
     path = _transactions_path(config)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(cleaned, f, ensure_ascii=False, indent=2)
 
 
 def _ensure_daily_ops_header(config: Dict[str, Any]) -> None:
@@ -156,6 +185,36 @@ def _append_daily_op(
     with open(_daily_ops_path(config), "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=DAILY_OPS_HEADERS)
         writer.writerow(row)
+    _trim_daily_ops(config, keep_days=365)
+
+
+def _trim_daily_ops(config: Dict[str, Any], keep_days: int) -> None:
+    if keep_days <= 0:
+        return
+    path = _daily_ops_path(config)
+    if not os.path.exists(path):
+        return
+
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = [row for row in reader if isinstance(row, dict)]
+
+    cutoff = (datetime.now() - timedelta(days=keep_days)).date()
+    kept_rows: List[Dict[str, str]] = []
+    for row in rows:
+        date_text = str(row.get("日期") or "").strip()
+        try:
+            row_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except Exception:
+            kept_rows.append(row)
+            continue
+        if row_date >= cutoff:
+            kept_rows.append(row)
+
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=DAILY_OPS_HEADERS)
+        writer.writeheader()
+        writer.writerows(kept_rows)
 
 
 def _build_timeline_entry(

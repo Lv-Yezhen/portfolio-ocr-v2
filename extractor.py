@@ -1,10 +1,12 @@
 import base64
+import csv
 import io
 import json
 import logging
 import os
 import re
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 from PIL import Image
@@ -264,6 +266,95 @@ def _should_reject_result(payload: Dict[str, Any]) -> bool:
     ]
     key_empty = all(v in (None, "", "-") for v in key_values)
     return _is_low_confidence_result(payload) and key_empty and _has_transaction_amounts(payload)
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "")
+    if not text or text == "-":
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _resolve_path(config: Dict[str, Any], key: str) -> str:
+    value = str(config.get(key, "")).strip()
+    if not value:
+        return ""
+    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
+
+
+def _parse_date(text: str) -> datetime:
+    raw = str(text or "").strip()
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d")
+    except Exception:
+        return datetime.min
+
+
+def _load_latest_daily_op(config: Dict[str, Any], code: str) -> Optional[Dict[str, str]]:
+    data_dir = _resolve_path(config, "data_dir")
+    if not data_dir:
+        return None
+    daily_ops_path = os.path.join(data_dir, "daily_ops.csv")
+    if not os.path.exists(daily_ops_path):
+        return None
+
+    latest: Optional[Dict[str, str]] = None
+    latest_date = datetime.min
+    try:
+        with open(daily_ops_path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if str(row.get("基金代码") or "").strip() != code:
+                    continue
+                row_date = _parse_date(str(row.get("日期") or ""))
+                if row_date >= latest_date:
+                    latest_date = row_date
+                    latest = row
+    except Exception:
+        return None
+    return latest
+
+
+def _validate_ocr_result(payload: Dict[str, Any], config: Dict[str, Any]) -> Tuple[bool, str]:
+    hold_amount = _to_float(payload.get("hold_amount"))
+    shares = _to_float(payload.get("shares"))
+    cost_price = _to_float(payload.get("cost_price"))
+
+    if hold_amount is not None and shares is not None and cost_price is not None:
+        diff = abs(shares * cost_price - hold_amount) / max(abs(hold_amount), 1.0)
+        if diff > 10.0:
+            return (
+                False,
+                "交叉验证失败: shares×cost_price 与 hold_amount 偏差超过10倍",
+            )
+
+    code = str(payload.get("code") or "").strip()
+    if not code or hold_amount is None:
+        return True, ""
+
+    latest = _load_latest_daily_op(config, code=code)
+    if not latest:
+        return True, ""
+
+    prev_hold = _to_float(latest.get("持有金额"))
+    if prev_hold is None or prev_hold <= 0:
+        return True, ""
+
+    latest_type = str(latest.get("操作类型") or "").strip()
+    ratio = max(hold_amount, prev_hold) / min(hold_amount, prev_hold) if min(hold_amount, prev_hold) > 0 else 0.0
+    if ratio > 10.0 and latest_type != "买入":
+        return (
+            False,
+            f"历史环比异常: 与上次持有金额差异{ratio:.2f}倍，且上次操作不是买入",
+        )
+    return True, ""
 
 
 def extract_from_image(image_path: str, config: Dict[str, Any], logger: logging.Logger) -> Optional[Dict[str, Any]]:

@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -95,8 +96,59 @@ def _write_csv(path: str, rows: Dict[str, Dict[str, str]]) -> None:
             writer.writerow(payload)
 
 
-def _render_markdown(rows: Dict[str, Dict[str, str]]) -> str:
+def _md_cell(value: Any) -> str:
+    text = str(value or "-").replace("|", "\\|").replace("\n", " ").strip()
+    return text if text else "-"
+
+
+def _pending_review_path(config: Dict[str, Any]) -> str:
+    data_dir = _resolve_path(config, "data_dir")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, "pending_review.json")
+
+
+def _load_pending_review(config: Dict[str, Any]) -> Dict[str, Any]:
+    path = _pending_review_path(config)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _render_markdown(rows: Dict[str, Dict[str, str]], pending_reviews: Dict[str, Any]) -> str:
     lines: List[str] = ["# 当前持仓", ""]
+    pending_items = [item for item in pending_reviews.values() if isinstance(item, dict)]
+    if pending_items:
+        pending_items.sort(key=lambda item: str(item.get("detected_at") or ""), reverse=True)
+        lines.append("> ⚠️ **待确认识别结果**")
+        lines.append(">")
+        for idx, item in enumerate(pending_items):
+            if idx > 0:
+                lines.append(">")
+            lines.append("> ---")
+            lines.append(">")
+            ocr = item.get("ocr_result") if isinstance(item.get("ocr_result"), dict) else {}
+            fund_name = str(ocr.get("name") or "-").strip()
+            fund_code = str(ocr.get("code") or "").strip()
+            fund = f"{fund_name} {fund_code}".strip() if fund_code else fund_name
+            lines.append(f"> **{_md_cell(item.get('filename'))}** - {_md_cell(fund)}")
+            lines.append(f"> 拦截原因: {_md_cell(item.get('reason'))}")
+            lines.append(">")
+            lines.append("> | 字段 | 识别值 |")
+            lines.append("> |------|--------|")
+            lines.append(f"> | 总金额 | {_md_cell(_fmt_amount(ocr.get('total_amount'), digits=2, use_comma=True))} |")
+            lines.append(f"> | 持有金额 | {_md_cell(_fmt_amount(ocr.get('hold_amount'), digits=2, use_comma=True))} |")
+            lines.append(f"> | 成本价 | {_md_cell(_fmt_amount(ocr.get('cost_price'), digits=4, use_comma=True))} |")
+            lines.append(f"> | 份额 | {_md_cell(_fmt_amount(ocr.get('shares'), digits=2, use_comma=True))} |")
+            lines.append(f"> | 持有收益 | {_md_cell(_fmt_amount(ocr.get('hold_profit'), digits=2, use_comma=True))} |")
+            lines.append(f"> | 最新净值 | {_md_cell(_fmt_amount(ocr.get('nav'), digits=4, use_comma=True))} |")
+        lines.append(">")
+        lines.append("> 去掉 `REVIEW_` 前缀 = 确认写入；删除文件 = 丢弃。")
+        lines.append("")
 
     def sort_key(row: Dict[str, str]) -> str:
         return row.get("更新时间", "")
@@ -126,18 +178,31 @@ def _render_markdown(rows: Dict[str, Dict[str, str]]) -> str:
         lines.append(f"| 待确认交易 | {row.get('待确认交易', '-')} |")
         lines.append("")
 
-    if len(lines) == 2:
+    if not sorted_rows:
         lines.append("暂无持仓数据。")
         lines.append("")
 
     return "\n".join(lines)
 
 
-def _write_markdown(path: str, rows: Dict[str, Dict[str, str]]) -> None:
+def _write_markdown(path: str, rows: Dict[str, Dict[str, str]], pending_reviews: Dict[str, Any]) -> None:
     _ensure_parent(path)
-    content = _render_markdown(rows)
+    content = _render_markdown(rows, pending_reviews=pending_reviews)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def _trim_history_entries(history_path: str, max_entries: int = 30) -> None:
+    if max_entries <= 0 or not os.path.exists(history_path):
+        return
+    with open(history_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    entries = re.findall(r"(?ms)^## .+?(?=^## |\Z)", content)
+    if len(entries) <= max_entries:
+        return
+    trimmed = "# OCR识别历史\n\n" + "".join(entries[-max_entries:])
+    with open(history_path, "w", encoding="utf-8") as f:
+        f.write(trimmed)
 
 
 def _append_history(config: Dict[str, Any], data: Dict[str, Any], source_image: str, updated_at: str) -> None:
@@ -156,6 +221,7 @@ def _append_history(config: Dict[str, Any], data: Dict[str, Any], source_image: 
         f.write("```json\n")
         f.write(payload)
         f.write("\n```\n\n")
+    _trim_history_entries(history_path, max_entries=30)
 
 
 def _build_row(data: Dict[str, Any], updated_at: str) -> Dict[str, str]:
@@ -199,8 +265,9 @@ def update_holdings(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
         updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         rows[code] = _build_row(data, updated_at)
 
+        pending_reviews = _load_pending_review(config)
         _write_csv(csv_path, rows)
-        _write_markdown(md_path, rows)
+        _write_markdown(md_path, rows, pending_reviews=pending_reviews)
         _append_history(config, data, source_image=source_image, updated_at=updated_at)
         record_snapshot(data=data, config=config, logger=logger, source_image=source_image)
 
@@ -209,3 +276,14 @@ def update_holdings(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
     except Exception:
         logger.exception("update_holdings执行失败")
         return False
+
+
+def refresh_holdings_markdown(config: Dict[str, Any], logger: logging.Logger) -> None:
+    try:
+        csv_path = _resolve_path(config, "holdings_csv")
+        md_path = _resolve_path(config, "holdings_md")
+        rows = _load_existing_csv(csv_path)
+        pending_reviews = _load_pending_review(config)
+        _write_markdown(md_path, rows, pending_reviews=pending_reviews)
+    except Exception:
+        logger.exception("刷新 holdings.md 失败")
