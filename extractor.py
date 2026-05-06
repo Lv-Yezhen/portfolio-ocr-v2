@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 import requests
 from PIL import Image
@@ -209,7 +209,13 @@ def _call_lm(
     response = None
     last_error = ""
     for idx, payload in enumerate(payload_variants):
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            json=payload,
+            timeout=30,
+            proxies=cast(Dict[str, str], {"http": None, "https": None}),
+        )
         if response.status_code == 200:
             if idx > 0:
                 logger.info("LM请求已切换到兼容格式 #%s", idx + 1)
