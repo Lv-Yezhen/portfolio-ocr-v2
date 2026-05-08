@@ -11,14 +11,11 @@ from chart import generate_charts
 from extractor import extract_from_image
 from portfolio import DAILY_OPS_HEADERS, clear_all_portfolio_data
 from watcher import process_new_images, run_watch_loop
-
-
-def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
+from paths import ensure_dir, project_root, resolve_path
 
 
 def load_config() -> Dict[str, Any]:
-    config_path = os.path.join(get_project_root(), "config.yaml")
+    config_path = os.path.join(project_root(), "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
 
@@ -34,14 +31,9 @@ def load_config() -> Dict[str, Any]:
     return data
 
 
-def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    value = str(config[key])
-    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
-
-
 def init_logger(config: Dict[str, Any]) -> logging.Logger:
-    log_dir = _resolve_path(config, "log_dir")
-    os.makedirs(log_dir, exist_ok=True)
+    log_dir = resolve_path(config, "log_dir")
+    ensure_dir(log_dir)
     log_file = os.path.join(log_dir, "app.log")
 
     logger = logging.getLogger("portfolio_ocr")
@@ -62,23 +54,23 @@ def init_logger(config: Dict[str, Any]) -> logging.Logger:
 
 
 def setup_project(config: Dict[str, Any], logger: logging.Logger) -> None:
-    watch_dir = _resolve_path(config, "watch_dir")
-    archive_dir = _resolve_path(config, "archive_dir")
-    log_dir = _resolve_path(config, "log_dir")
-    md_path = _resolve_path(config, "holdings_md")
-    csv_path = _resolve_path(config, "holdings_csv")
-    state_path = _resolve_path(config, "state_file")
+    watch_dir = resolve_path(config, "watch_dir")
+    archive_dir = resolve_path(config, "archive_dir")
+    log_dir = resolve_path(config, "log_dir")
+    md_path = resolve_path(config, "holdings_md")
+    csv_path = resolve_path(config, "holdings_csv")
+    state_path = resolve_path(config, "state_file")
     history_path = os.path.join(log_dir, "ocr_history.md")
-    data_dir = _resolve_path(config, "data_dir")
-    chart_dir = _resolve_path(config, "chart_dir")
+    data_dir = resolve_path(config, "data_dir")
+    chart_dir = resolve_path(config, "chart_dir")
     transactions_path = os.path.join(data_dir, "transactions.json")
     daily_ops_path = os.path.join(data_dir, "daily_ops.csv")
 
-    os.makedirs(watch_dir, exist_ok=True)
-    os.makedirs(archive_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(chart_dir, exist_ok=True)
+    ensure_dir(watch_dir)
+    ensure_dir(archive_dir)
+    ensure_dir(log_dir)
+    ensure_dir(data_dir)
+    ensure_dir(chart_dir)
 
     if not os.path.exists(md_path):
         with open(md_path, "w", encoding="utf-8") as f:
@@ -109,10 +101,10 @@ def setup_project(config: Dict[str, Any], logger: logging.Logger) -> None:
 
 
 def reset_project_data(config: Dict[str, Any], logger: logging.Logger) -> None:
-    md_path = _resolve_path(config, "holdings_md")
-    csv_path = _resolve_path(config, "holdings_csv")
-    state_path = _resolve_path(config, "state_file")
-    history_path = os.path.join(_resolve_path(config, "log_dir"), "ocr_history.md")
+    md_path = resolve_path(config, "holdings_md")
+    csv_path = resolve_path(config, "holdings_csv")
+    state_path = resolve_path(config, "state_file")
+    history_path = os.path.join(resolve_path(config, "log_dir"), "ocr_history.md")
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("# 当前持仓\n\n暂无持仓数据。\n")
@@ -156,7 +148,7 @@ def main() -> None:
     if args.test:
         image_path = args.test
         if not os.path.isabs(image_path):
-            image_path = os.path.join(get_project_root(), image_path)
+            image_path = os.path.join(project_root(), image_path)
         if not os.path.exists(image_path):
             logger.error("测试图片不存在: %s", image_path)
             return

@@ -6,7 +6,7 @@
     "fields": [
       {
         "key": "llm.prediction.systemPrompt",
-        "value": "Role: 基金 APP 截图数据提取器专家\nTask: 识别并提取截图中显示的基金持仓关键数据，并严格按照提供的 JSON Schema 格式化输出。\n\nOperational Rules:\n\n纯净输出：禁止输出任何 Markdown 标记（如 ```json）、解释、开场白或结尾语。仅输出合法的 JSON 字符串。\n\n数据完整性：\n\n严禁编造、推理或猜测数据。\n\n若截图中未出现某字段，统一填入 null；仅当截图明确无待确认交易时，transactions 返回空数组 []。\n\n格式约束：\n\n金额/数值：移除千分位逗号（如 1,234.56 转换为 1234.56），保留 2 位小数。\n\n百分比：保留符号（如 + 或 -），以字符串格式输出，示例：+4.83%。\n\n基金代码：固定为 6 位数字字符串。\n\n逻辑区分：\n\n务必区分“持有收益”（累计收益）与“今日收益”（单日变动金额）。\n\n“待确认金额”通常指正在交易中但未计入持仓的资金。\n\n严禁错位映射：\n\ndaily_profit / hold_profit / hold_rate / daily_change / nav / nav_date 只能来自对应字段，不得写入 transactions。\n\ntransactions 仅提取“待确认交易”区域；若截图未出现该区域或未出现交易项，返回空数组。\n\n【黄金/贵金属类基金专项识别规则】\n如果基金名称包含黄金、白银、贵金属字样，或截图顶部大数字标题为「当前持有(元)」：\n1. 顶部大数字 = total_amount = hold_amount，优先级最高\n2. 「持有收益(元)」栏的数值，仅映射到 hold_profit 字段，绝对不能作为 hold_amount\n3. 明细区的「持有金额」数值必须等于顶部大数字\n4. 强制自校验：\n   - hold_amount 绝对值 > hold_profit 绝对值\n   - hold_amount ≈ shares × nav（误差≤±10%）\n   - 校验不通过必须重新识别，不能返回错误结果\n\n【通用字段优先级规则】\n所有基金类型统一遵循：\n1. 字段必须严格按标签名称映射，标签为「XX收益」的数值只能映射到收益类字段，不能映射到金额/份额类字段\n2. 待确认金额为0时，hold_amount必须等于total_amount"
+        "value": "Role: 基金 APP 截图数据提取器专家\nTask: 识别并提取截图中显示的基金持仓或交易记录关键数据，并严格按照提供的 JSON Schema 格式化输出。\n\nOperational Rules:\n\n纯净输出：禁止输出任何 Markdown 标记（如 ```json）、解释、开场白或结尾语。仅输出合法的 JSON 字符串。\n\n截图类型：\n\n如果截图是基金持仓/资产详情页，screenshot_type 返回 holding_snapshot。\n\n如果截图标题为「交易记录」或主体是买入/卖出/转换/分红等历史交易列表，screenshot_type 返回 transaction_history。\n\n交易记录页只提取截图中真实出现的历史交易，写入 history_transactions；不要根据持仓变化、金额差值或净值推测交易。\n\n数据完整性：\n\n严禁编造、推理或猜测数据。\n\n若截图中未出现某字段，统一填入 null；仅当截图明确无待确认交易时，transactions 返回空数组 []；仅当截图明确无历史交易时，history_transactions 返回空数组 []。\n\n格式约束：\n\n金额/数值：移除千分位逗号（如 1,234.56 转换为 1234.56），保留 2 位小数。\n\n百分比：保留符号（如 + 或 -），以字符串格式输出，示例：+4.83%。\n\n基金代码：固定为 6 位数字字符串。\n\n历史交易时间：date 使用 YYYY-MM-DD；time 尽量使用截图完整时间（如 2026-04-28 14:52:10）；若只有日期，则 time 填 null。\n\n逻辑区分：\n\n务必区分“持有收益”（累计收益）与“今日收益”（单日变动金额）。\n\n“待确认金额”通常指正在交易中但未计入持仓的资金。\n\n严禁错位映射：\n\ndaily_profit / hold_profit / hold_rate / daily_change / nav / nav_date 只能来自对应字段，不得写入 transactions 或 history_transactions。\n\ntransactions 仅提取“待确认交易”区域；若截图未出现该区域或未出现交易项，返回空数组。\n\nhistory_transactions 仅提取「交易记录」历史列表；每项至少包含 type、amount、date，未出现的 status 填 null。\n\n【黄金/贵金属类基金专项识别规则】\n如果基金名称包含黄金、白银、贵金属字样，或截图顶部大数字标题为「当前持有(元)」：\n1. 顶部大数字 = total_amount = hold_amount，优先级最高\n2. 「持有收益(元)」栏的数值，仅映射到 hold_profit 字段，绝对不能作为 hold_amount\n3. 明细区的「持有金额」数值必须等于顶部大数字\n4. 强制自校验：\n   - hold_amount 绝对值 > hold_profit 绝对值\n   - hold_amount ≈ shares × nav（误差≤±10%）\n   - 校验不通过必须重新识别，不能返回错误结果\n\n【通用字段优先级规则】\n所有基金类型统一遵循：\n1. 字段必须严格按标签名称映射，标签为「XX收益」的数值只能映射到收益类字段，不能映射到金额/份额类字段\n2. 待确认金额为0时，hold_amount必须等于total_amount"
       },
       {
         "key": "llm.prediction.structured",
@@ -17,6 +17,14 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+              "screenshot_type": {
+                "enum": [
+                  "holding_snapshot",
+                  "transaction_history",
+                  null
+                ],
+                "description": "截图类型：持仓页或交易记录页"
+              },
               "code": {
                 "type": [
                   "string",
@@ -138,9 +146,56 @@
                   }
                 },
                 "description": "待确认交易列表"
+              },
+              "history_transactions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "买入",
+                        "卖出",
+                        "转换",
+                        "分红",
+                        "未知",
+                        null
+                      ]
+                    },
+                    "amount": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "date": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "交易日期，YYYY-MM-DD"
+                    },
+                    "time": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "截图中的完整交易时间"
+                    },
+                    "status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "description": "交易记录页中的历史交易列表"
               }
             },
             "required": [
+              "screenshot_type",
               "code",
               "name",
               "total_amount",
@@ -154,7 +209,8 @@
               "daily_change",
               "nav",
               "nav_date",
-              "transactions"
+              "transactions",
+              "history_transactions"
             ]
           }
         }

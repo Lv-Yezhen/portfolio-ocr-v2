@@ -1,5 +1,4 @@
 import csv
-import json
 import logging
 import os
 from datetime import datetime
@@ -10,40 +9,23 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-
-def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    value = str(config.get(key, "")).strip()
-    if not value:
-        raise ValueError(f"缺少配置项: {key}")
-    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
+from paths import ensure_dir, load_json_object, resolve_path
 
 
 def _daily_ops_path(config: Dict[str, Any]) -> str:
-    data_dir = _resolve_path(config, "data_dir")
-    os.makedirs(data_dir, exist_ok=True)
+    data_dir = resolve_path(config, "data_dir")
+    ensure_dir(data_dir)
     return os.path.join(data_dir, "daily_ops.csv")
 
 
 def _transactions_path(config: Dict[str, Any]) -> str:
-    data_dir = _resolve_path(config, "data_dir")
-    os.makedirs(data_dir, exist_ok=True)
+    data_dir = resolve_path(config, "data_dir")
+    ensure_dir(data_dir)
     return os.path.join(data_dir, "transactions.json")
 
 
 def _load_transactions(config: Dict[str, Any]) -> Dict[str, Any]:
-    path = _transactions_path(config)
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    return load_json_object(_transactions_path(config))
 
 
 def _load_daily_ops(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -75,8 +57,8 @@ def _date_sort_key(text: str) -> datetime:
 
 def generate_charts(config: Dict[str, Any], logger: logging.Logger) -> bool:
     rows = _load_daily_ops(config)
-    chart_dir = _resolve_path(config, "chart_dir")
-    os.makedirs(chart_dir, exist_ok=True)
+    chart_dir = resolve_path(config, "chart_dir")
+    ensure_dir(chart_dir)
     fund_meta = _load_transactions(config)
 
     if not rows:

@@ -1,5 +1,4 @@
 import hashlib
-import json
 import logging
 import os
 import shutil
@@ -10,21 +9,13 @@ from typing import Any, Dict, List, Set
 from chart import generate_charts
 from extractor import _validate_ocr_result, extract_from_image
 from holdings import refresh_holdings_markdown, update_holdings
+from paths import ensure_dir, load_json_object, resolve_path, write_json
 from portfolio import check_pending_confirmations
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 REVIEW_PREFIX = "REVIEW_"
 MAX_STATE_HASHES = 200
-
-
-def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    value = str(config[key])
-    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
 
 
 def _sha256(file_path: str) -> str:
@@ -36,27 +27,17 @@ def _sha256(file_path: str) -> str:
 
 
 def _load_state(state_path: str) -> Dict[str, Any]:
-    if not os.path.exists(state_path):
-        return {"processed_hashes": []}
-
-    try:
-        with open(state_path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        if not isinstance(state, dict):
-            return {"processed_hashes": []}
-        if "processed_hashes" not in state or not isinstance(state["processed_hashes"], list):
-            state["processed_hashes"] = []
-        return state
-    except Exception:
-        return {"processed_hashes": []}
+    state = load_json_object(state_path)
+    if "processed_hashes" not in state or not isinstance(state["processed_hashes"], list):
+        state["processed_hashes"] = []
+    return state
 
 
 def _save_state(state_path: str, state: Dict[str, Any]) -> None:
     hashes = state.get("processed_hashes", [])
     if isinstance(hashes, list) and len(hashes) > MAX_STATE_HASHES:
         state["processed_hashes"] = hashes[-MAX_STATE_HASHES:]
-    with open(state_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    write_json(state_path, state)
 
 
 def _scan_top_images(watch_dir: str) -> List[str]:
@@ -78,7 +59,7 @@ def _scan_top_images(watch_dir: str) -> List[str]:
 
 
 def _archive_file(image_path: str, archive_dir: str) -> str:
-    os.makedirs(archive_dir, exist_ok=True)
+    ensure_dir(archive_dir)
     base_name = os.path.basename(image_path)
     target = os.path.join(archive_dir, base_name)
 
@@ -118,26 +99,16 @@ def _trim_archive(archive_dir: str, max_keep: int, logger: logging.Logger) -> No
 
 
 def _pending_review_path(data_dir: str) -> str:
-    os.makedirs(data_dir, exist_ok=True)
+    ensure_dir(data_dir)
     return os.path.join(data_dir, "pending_review.json")
 
 
 def _load_pending_review(data_dir: str) -> Dict[str, Any]:
-    path = _pending_review_path(data_dir)
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
+    return load_json_object(_pending_review_path(data_dir))
 
 
 def _save_pending_review(data_dir: str, review_data: Dict[str, Any]) -> None:
-    path = _pending_review_path(data_dir)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(review_data, f, ensure_ascii=False, indent=2)
+    write_json(_pending_review_path(data_dir), review_data)
 
 
 def _cleanup_stale_reviews(review_data: Dict[str, Any], watch_dir: str) -> Dict[str, Any]:
@@ -156,13 +127,13 @@ def _cleanup_stale_reviews(review_data: Dict[str, Any], watch_dir: str) -> Dict[
 
 
 def process_new_images(config: Dict[str, Any], logger: logging.Logger) -> int:
-    watch_dir = _resolve_path(config, "watch_dir")
-    archive_dir = _resolve_path(config, "archive_dir")
-    state_path = _resolve_path(config, "state_file")
-    data_dir = _resolve_path(config, "data_dir")
+    watch_dir = resolve_path(config, "watch_dir")
+    archive_dir = resolve_path(config, "archive_dir")
+    state_path = resolve_path(config, "state_file")
+    data_dir = resolve_path(config, "data_dir")
 
-    os.makedirs(watch_dir, exist_ok=True)
-    os.makedirs(archive_dir, exist_ok=True)
+    ensure_dir(watch_dir)
+    ensure_dir(archive_dir)
 
     state = _load_state(state_path)
     seen_hash_list = state.get("processed_hashes", [])

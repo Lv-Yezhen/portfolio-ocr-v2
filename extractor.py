@@ -11,12 +11,11 @@ from typing import Any, Dict, Optional, Tuple, cast
 import requests
 from PIL import Image
 
-
-def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
+from paths import resolve_path
 
 
 EXPECTED_KEYS = [
+    "screenshot_type",
     "code",
     "name",
     "total_amount",
@@ -31,9 +30,11 @@ EXPECTED_KEYS = [
     "nav",
     "nav_date",
     "transactions",
+    "history_transactions",
 ]
 
 KEY_ALIASES = {
+    "screenshot_type": ["screenshot_type", "page_type", "页面类型", "截图类型"],
     "code": ["code", "fund_code", "基金代码", "代码"],
     "name": ["name", "fund_name", "基金名称", "名称"],
     "total_amount": ["total_amount", "total", "总金额", "总资产", "总市值"],
@@ -48,6 +49,7 @@ KEY_ALIASES = {
     "nav": ["nav", "latest_nav", "净值", "最新净值"],
     "nav_date": ["nav_date", "净值日期", "估值日期"],
     "transactions": ["transactions", "待确认交易", "pending_transactions"],
+    "history_transactions": ["history_transactions", "交易记录", "历史交易", "transaction_history"],
 }
 
 
@@ -132,6 +134,15 @@ def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         value = _pick_value(source, KEY_ALIASES.get(key, [key]))
         normalized[key] = value
 
+    screenshot_type = str(normalized.get("screenshot_type") or "").strip()
+    if screenshot_type not in {"holding_snapshot", "transaction_history"}:
+        history_transactions = normalized.get("history_transactions")
+        if isinstance(history_transactions, list) and history_transactions:
+            screenshot_type = "transaction_history"
+        else:
+            screenshot_type = "holding_snapshot"
+    normalized["screenshot_type"] = screenshot_type
+
     code = normalized.get("code")
     normalized["code"] = str(code).strip() if code is not None else ""
 
@@ -145,6 +156,14 @@ def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         normalized["transactions"] = tx
     else:
         normalized["transactions"] = [tx]
+
+    history_tx = normalized.get("history_transactions")
+    if history_tx is None:
+        normalized["history_transactions"] = []
+    elif isinstance(history_tx, list):
+        normalized["history_transactions"] = history_tx
+    else:
+        normalized["history_transactions"] = [history_tx]
 
     return normalized
 
@@ -234,6 +253,9 @@ def _call_lm(
 
 
 def _is_low_confidence_result(payload: Dict[str, Any]) -> bool:
+    if payload.get("screenshot_type") == "transaction_history":
+        return False
+
     important_keys = [
         "hold_amount",
         "pending_amount",
@@ -288,13 +310,6 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
-def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    value = str(config.get(key, "")).strip()
-    if not value:
-        return ""
-    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
-
-
 def _parse_date(text: str) -> datetime:
     raw = str(text or "").strip()
     try:
@@ -304,7 +319,7 @@ def _parse_date(text: str) -> datetime:
 
 
 def _load_latest_daily_op(config: Dict[str, Any], code: str) -> Optional[Dict[str, str]]:
-    data_dir = _resolve_path(config, "data_dir")
+    data_dir = resolve_path(config, "data_dir", required=False)
     if not data_dir:
         return None
     daily_ops_path = os.path.join(data_dir, "daily_ops.csv")
@@ -329,6 +344,9 @@ def _load_latest_daily_op(config: Dict[str, Any], code: str) -> Optional[Dict[st
 
 
 def _validate_ocr_result(payload: Dict[str, Any], config: Dict[str, Any]) -> Tuple[bool, str]:
+    if payload.get("screenshot_type") == "transaction_history":
+        return True, ""
+
     hold_amount = _to_float(payload.get("hold_amount"))
     shares = _to_float(payload.get("shares"))
     cost_price = _to_float(payload.get("cost_price"))
@@ -374,7 +392,14 @@ def extract_from_image(image_path: str, config: Dict[str, Any], logger: logging.
             headers["Authorization"] = f"Bearer {api_key}"
 
         model = str(config.get("model", "glm-ocr"))
-        text_prompt = "请按已配置规则提取图片信息并返回JSON。"
+        text_prompt = (
+            "请识别截图类型并返回JSON。"
+            "如果是基金持仓/资产详情页，screenshot_type返回holding_snapshot，提取持仓字段。"
+            "如果标题或内容为交易记录页，screenshot_type返回transaction_history，"
+            "提取基金代码、基金名称，并把每条历史交易写入history_transactions；"
+            "history_transactions每项包含type、amount、date、time、status。"
+            "不要根据持仓差值推测交易，未在截图中出现的字段填null或空数组。"
+        )
         result = _call_lm(
             endpoint=endpoint,
             headers=headers,

@@ -1,11 +1,11 @@
 import csv
-import json
 import logging
 import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from nav_api import get_nav
+from paths import ensure_dir, load_json_object, resolve_path, write_json
 
 
 DAILY_OPS_HEADERS = [
@@ -20,17 +20,6 @@ DAILY_OPS_HEADERS = [
     "累计收益",
     "数据来源",
 ]
-
-
-def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    value = str(config.get(key, "")).strip()
-    if not value:
-        raise ValueError(f"缺少配置项: {key}")
-    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -52,7 +41,7 @@ def _safe_round(value: float, digits: int = 2) -> float:
 
 
 def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+    ensure_dir(path)
 
 
 def _now_date() -> str:
@@ -64,6 +53,10 @@ def _normalize_tx_date(value: Any) -> Optional[str]:
     if not text:
         return None
     try:
+        if len(text) >= 10:
+            date_part = text[:10]
+            datetime.strptime(date_part, "%Y-%m-%d")
+            return date_part
         if len(text) == 10:
             datetime.strptime(text, "%Y-%m-%d")
             return text
@@ -89,27 +82,19 @@ def _is_sold_out(hold_amount: float, shares: float) -> bool:
 
 
 def _transactions_path(config: Dict[str, Any]) -> str:
-    data_dir = _resolve_path(config, "data_dir")
+    data_dir = resolve_path(config, "data_dir")
     _ensure_dir(data_dir)
     return os.path.join(data_dir, "transactions.json")
 
 
 def _daily_ops_path(config: Dict[str, Any]) -> str:
-    data_dir = _resolve_path(config, "data_dir")
+    data_dir = resolve_path(config, "data_dir")
     _ensure_dir(data_dir)
     return os.path.join(data_dir, "daily_ops.csv")
 
 
 def _load_transactions(config: Dict[str, Any]) -> Dict[str, Any]:
-    path = _transactions_path(config)
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    return load_json_object(_transactions_path(config))
 
 
 def _save_transactions(config: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -143,8 +128,7 @@ def _save_transactions(config: Dict[str, Any], payload: Dict[str, Any]) -> None:
         cleaned[code] = new_fund
 
     path = _transactions_path(config)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    write_json(path, cleaned)
 
 
 def _ensure_daily_ops_header(config: Dict[str, Any]) -> None:
@@ -304,6 +288,34 @@ def _normalize_pending_transactions(
     return added
 
 
+def _normalize_history_transactions(source_txs: Any, source_image: str) -> List[Dict[str, Any]]:
+    if not isinstance(source_txs, list):
+        return []
+    image_name = os.path.basename(source_image or "")
+    items: List[Dict[str, Any]] = []
+    for tx in source_txs:
+        if not isinstance(tx, dict):
+            continue
+        tx_type = str(tx.get("type", "")).strip()
+        amount = _to_float(tx.get("amount"), default=-1)
+        tx_date = _normalize_tx_date(tx.get("date") or tx.get("time") or tx.get("created_at"))
+        if tx_type not in {"买入", "卖出"} or amount <= 0 or not tx_date:
+            continue
+        raw_time = str(tx.get("time") or tx.get("datetime") or "").strip()
+        items.append(
+            {
+                "type": tx_type,
+                "amount": _safe_round(amount, 2),
+                "date": tx_date,
+                "time": raw_time,
+                "status": str(tx.get("status") or "confirmed").strip() or "confirmed",
+                "source_image": image_name,
+            }
+        )
+    items.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("time") or ""), str(item.get("type") or ""), _to_float(item.get("amount"))))
+    return items
+
+
 def _dedup_pending(existing: List[Dict[str, Any]], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = {
         (str(item.get("type")), f"{_to_float(item.get('amount')):.2f}", str(item.get("expected_date")))
@@ -317,6 +329,23 @@ def _dedup_pending(existing: List[Dict[str, Any]], candidates: List[Dict[str, An
         seen.add(sig)
         result.append(item)
     return result
+
+
+def _history_signature(item: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    return (
+        str(item.get("date") or ""),
+        str(item.get("time") or ""),
+        str(item.get("type") or ""),
+        f"{_to_float(item.get('amount')):.2f}",
+    )
+
+
+def _timeline_signature(item: Dict[str, Any]) -> Tuple[str, str, str]:
+    return (
+        str(item.get("date") or ""),
+        str(item.get("type") or ""),
+        f"{_to_float(item.get('delta_amount')):.2f}",
+    )
 
 
 def _ensure_dict_list(value: Any) -> List[Dict[str, Any]]:
@@ -415,6 +444,92 @@ def record_snapshot(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
     all_data[code] = fund
     _save_transactions(config, all_data)
     logger.info("已记录快照: %s %s (%s)", fund["name"], code, op_type)
+    return True
+
+
+def record_transaction_history(data: Dict[str, Any], config: Dict[str, Any], logger: logging.Logger, source_image: str = "") -> bool:
+    code = str(data.get("code") or "").strip()
+    if not code:
+        return False
+
+    history_transactions = _normalize_history_transactions(data.get("history_transactions"), source_image=source_image)
+    if not history_transactions:
+        logger.error("交易记录截图未识别到有效交易: %s", source_image)
+        return False
+
+    all_data = _load_transactions(config)
+    fund = all_data.get(code) if isinstance(all_data.get(code), dict) else None
+    if fund is None:
+        fund = {"name": str(data.get("name") or "").strip(), "is_sold_out": False, "timeline": [], "pending_transactions": []}
+
+    timeline: List[Dict[str, Any]] = _ensure_dict_list(fund.get("timeline"))
+    recorded_history: List[Dict[str, Any]] = _ensure_dict_list(fund.get("history_transactions"))
+    seen_history = {_history_signature(item) for item in recorded_history}
+    seen_timeline = {_timeline_signature(item) for item in timeline}
+
+    current_hold = _to_float(timeline[-1].get("hold_amount"), 0.0) if timeline else 0.0
+    current_shares = _to_float(timeline[-1].get("shares"), 0.0) if timeline else 0.0
+    current_nav = _to_float(timeline[-1].get("nav"), 0.0) if timeline else 0.0
+    current_profit = _to_float(timeline[-1].get("cumulative_profit"), 0.0) if timeline else 0.0
+    added_count = 0
+
+    for tx in history_transactions:
+        history_sig = _history_signature(tx)
+        if history_sig in seen_history:
+            continue
+
+        tx_type = str(tx.get("type") or "").strip()
+        amount = _to_float(tx.get("amount"), 0.0)
+        tx_date = str(tx.get("date") or "").strip()
+        if tx_type == "买入":
+            current_hold += amount
+        elif tx_type == "卖出":
+            current_hold = max(0.0, current_hold - amount)
+
+        timeline_sig = (tx_date, tx_type, f"{amount:.2f}")
+        if timeline_sig not in seen_timeline:
+            timeline.append(
+                _build_timeline_entry(
+                    date=tx_date,
+                    op_type=tx_type,
+                    hold_amount=current_hold,
+                    shares=current_shares,
+                    nav=current_nav,
+                    cumulative_profit=current_profit,
+                    delta_amount=amount,
+                    source="transaction_history",
+                )
+            )
+            _append_daily_op(
+                config=config,
+                date=tx_date,
+                code=code,
+                name=str(data.get("name") or fund.get("name") or "").strip(),
+                op_type=tx_type,
+                delta_amount=amount,
+                hold_amount=current_hold,
+                shares=current_shares,
+                nav=current_nav,
+                cumulative_profit=current_profit,
+                source="transaction_history",
+            )
+            seen_timeline.add(timeline_sig)
+
+        recorded = dict(tx)
+        recorded["source"] = "transaction_history"
+        recorded_history.append(recorded)
+        seen_history.add(history_sig)
+        added_count += 1
+
+    timeline.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("source") or "")))
+    recorded_history.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("time") or "")))
+
+    fund["name"] = str(data.get("name") or fund.get("name") or "").strip()
+    fund["timeline"] = timeline
+    fund["history_transactions"] = recorded_history
+    all_data[code] = fund
+    _save_transactions(config, all_data)
+    logger.info("已记录交易历史: %s %s 新增%s条", fund["name"], code, added_count)
     return True
 
 
@@ -548,12 +663,11 @@ def check_pending_confirmations(config: Dict[str, Any], logger: logging.Logger) 
 def clear_all_portfolio_data(config: Dict[str, Any], logger: logging.Logger) -> None:
     tx_path = _transactions_path(config)
     daily_path = _daily_ops_path(config)
-    chart_dir = _resolve_path(config, "chart_dir")
+    chart_dir = resolve_path(config, "chart_dir")
     _ensure_dir(os.path.dirname(tx_path))
     _ensure_dir(chart_dir)
 
-    with open(tx_path, "w", encoding="utf-8") as f:
-        json.dump({}, f, ensure_ascii=False, indent=2)
+    write_json(tx_path, {})
 
     with open(daily_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=DAILY_OPS_HEADERS)

@@ -6,7 +6,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List
 
-from portfolio import record_snapshot
+from paths import ensure_dir, ensure_parent, load_json_object, resolve_path
+from portfolio import record_snapshot, record_transaction_history
 
 
 CSV_HEADERS = [
@@ -26,15 +27,6 @@ CSV_HEADERS = [
     "更新时间",
     "待确认交易",
 ]
-
-
-def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    value = str(config[key])
-    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
 
 
 def _to_float(value: Any) -> Any:
@@ -65,12 +57,6 @@ def _fmt_text(value: Any) -> str:
     return text if text else "-"
 
 
-def _ensure_parent(path: str) -> None:
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-
 def _load_existing_csv(path: str) -> Dict[str, Dict[str, str]]:
     rows: Dict[str, Dict[str, str]] = {}
     if not os.path.exists(path):
@@ -86,7 +72,7 @@ def _load_existing_csv(path: str) -> Dict[str, Dict[str, str]]:
 
 
 def _write_csv(path: str, rows: Dict[str, Dict[str, str]]) -> None:
-    _ensure_parent(path)
+    ensure_parent(path)
     with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
         writer.writeheader()
@@ -102,21 +88,13 @@ def _md_cell(value: Any) -> str:
 
 
 def _pending_review_path(config: Dict[str, Any]) -> str:
-    data_dir = _resolve_path(config, "data_dir")
-    os.makedirs(data_dir, exist_ok=True)
+    data_dir = resolve_path(config, "data_dir")
+    ensure_dir(data_dir)
     return os.path.join(data_dir, "pending_review.json")
 
 
 def _load_pending_review(config: Dict[str, Any]) -> Dict[str, Any]:
-    path = _pending_review_path(config)
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
+    return load_json_object(_pending_review_path(config))
 
 
 def _render_markdown(rows: Dict[str, Dict[str, str]], pending_reviews: Dict[str, Any]) -> str:
@@ -186,7 +164,7 @@ def _render_markdown(rows: Dict[str, Dict[str, str]], pending_reviews: Dict[str,
 
 
 def _write_markdown(path: str, rows: Dict[str, Dict[str, str]], pending_reviews: Dict[str, Any]) -> None:
-    _ensure_parent(path)
+    ensure_parent(path)
     content = _render_markdown(rows, pending_reviews=pending_reviews)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -206,8 +184,8 @@ def _trim_history_entries(history_path: str, max_entries: int = 30) -> None:
 
 
 def _append_history(config: Dict[str, Any], data: Dict[str, Any], source_image: str, updated_at: str) -> None:
-    history_path = os.path.join(_resolve_path(config, "log_dir"), "ocr_history.md")
-    _ensure_parent(history_path)
+    history_path = os.path.join(resolve_path(config, "log_dir"), "ocr_history.md")
+    ensure_parent(history_path)
 
     if not os.path.exists(history_path):
         with open(history_path, "w", encoding="utf-8") as f:
@@ -251,6 +229,39 @@ def _build_row(data: Dict[str, Any], updated_at: str) -> Dict[str, str]:
     }
 
 
+def _update_transaction_history(data: Dict[str, Any], config: Dict[str, Any], logger: logging.Logger, source_image: str, updated_at: str) -> bool:
+    updated = record_transaction_history(data=data, config=config, logger=logger, source_image=source_image)
+    if not updated:
+        return False
+
+    csv_path = resolve_path(config, "holdings_csv")
+    md_path = resolve_path(config, "holdings_md")
+    rows = _load_existing_csv(csv_path)
+    pending_reviews = _load_pending_review(config)
+    _write_markdown(md_path, rows, pending_reviews=pending_reviews)
+    _append_history(config, data, source_image=source_image, updated_at=updated_at)
+    logger.info("交易历史已更新: %s %s", data.get("name"), data.get("code"))
+    return True
+
+
+def _update_holding_snapshot(data: Dict[str, Any], config: Dict[str, Any], logger: logging.Logger, source_image: str, updated_at: str) -> bool:
+    csv_path = resolve_path(config, "holdings_csv")
+    md_path = resolve_path(config, "holdings_md")
+
+    rows = _load_existing_csv(csv_path)
+    code = str(data.get("code") or "").strip()
+    rows[code] = _build_row(data, updated_at)
+
+    pending_reviews = _load_pending_review(config)
+    _write_csv(csv_path, rows)
+    _write_markdown(md_path, rows, pending_reviews=pending_reviews)
+    _append_history(config, data, source_image=source_image, updated_at=updated_at)
+    record_snapshot(data=data, config=config, logger=logger, source_image=source_image)
+
+    logger.info("持仓已更新: %s %s", rows[code].get("名称"), code)
+    return True
+
+
 def update_holdings(data: Dict[str, Any], config: Dict[str, Any], logger: logging.Logger, source_image: str) -> bool:
     try:
         code = str(data.get("code") or "").strip()
@@ -258,21 +269,12 @@ def update_holdings(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
             logger.error("识别结果缺少基金代码，已跳过更新")
             return False
 
-        csv_path = _resolve_path(config, "holdings_csv")
-        md_path = _resolve_path(config, "holdings_md")
-
-        rows = _load_existing_csv(csv_path)
         updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-        rows[code] = _build_row(data, updated_at)
 
-        pending_reviews = _load_pending_review(config)
-        _write_csv(csv_path, rows)
-        _write_markdown(md_path, rows, pending_reviews=pending_reviews)
-        _append_history(config, data, source_image=source_image, updated_at=updated_at)
-        record_snapshot(data=data, config=config, logger=logger, source_image=source_image)
+        if data.get("screenshot_type") == "transaction_history":
+            return _update_transaction_history(data, config, logger, source_image, updated_at)
 
-        logger.info("持仓已更新: %s %s", rows[code].get("名称"), code)
-        return True
+        return _update_holding_snapshot(data, config, logger, source_image, updated_at)
     except Exception:
         logger.exception("update_holdings执行失败")
         return False
@@ -280,8 +282,8 @@ def update_holdings(data: Dict[str, Any], config: Dict[str, Any], logger: loggin
 
 def refresh_holdings_markdown(config: Dict[str, Any], logger: logging.Logger) -> None:
     try:
-        csv_path = _resolve_path(config, "holdings_csv")
-        md_path = _resolve_path(config, "holdings_md")
+        csv_path = resolve_path(config, "holdings_csv")
+        md_path = resolve_path(config, "holdings_md")
         rows = _load_existing_csv(csv_path)
         pending_reviews = _load_pending_review(config)
         _write_markdown(md_path, rows, pending_reviews=pending_reviews)
