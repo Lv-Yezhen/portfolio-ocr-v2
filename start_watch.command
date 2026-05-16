@@ -43,7 +43,7 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
-nohup "$PYTHON_BIN" "$SCRIPT_DIR/main.py" --watch >> "$LOG_FILE" 2>&1 &
+nohup "$PYTHON_BIN" "$SCRIPT_DIR/main.py" --watch >/dev/null 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
 touch "$RUNNING_MARK_FILE"

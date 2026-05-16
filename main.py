@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict
 
 import yaml
@@ -11,14 +12,43 @@ from chart import generate_charts
 from extractor import extract_from_image
 from portfolio import DAILY_OPS_HEADERS, clear_all_portfolio_data
 from watcher import process_new_images, run_watch_loop
+from paths import ensure_dir, project_root, resolve_path
 
 
-def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
+class SummaryLogFilter(logging.Filter):
+    INFO_PREFIXES = (
+        "开始监控目录",
+        "持仓已更新",
+        "识别结果已标记待确认",
+        "OCR失败，保留文件待重试",
+        "本轮处理完成，共处理新截图",
+        "监控已停止",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        message = record.getMessage()
+        return any(message.startswith(prefix) for prefix in self.INFO_PREFIXES)
+
+
+def parse_log_level(value: Any, *, default: str = "DEBUG") -> int:
+    level_name = str(value or default).strip().upper()
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    if level_name not in level_map:
+        supported = ", ".join(level_map)
+        raise ValueError(f"log_level 配置无效: {value!r}，支持: {supported}")
+    return level_map[level_name]
 
 
 def load_config() -> Dict[str, Any]:
-    config_path = os.path.join(get_project_root(), "config.yaml")
+    config_path = os.path.join(project_root(), "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
 
@@ -31,54 +61,71 @@ def load_config() -> Dict[str, Any]:
     data.setdefault("chart_dir", "charts")
     data.setdefault("nav_confirm_hour", 21)
     data.setdefault("delta_threshold", 10)
+    data.setdefault("log_level", "DEBUG")
     return data
 
 
-def _resolve_path(config: Dict[str, Any], key: str) -> str:
-    value = str(config[key])
-    return value if os.path.isabs(value) else os.path.join(get_project_root(), value)
-
-
 def init_logger(config: Dict[str, Any]) -> logging.Logger:
-    log_dir = _resolve_path(config, "log_dir")
-    os.makedirs(log_dir, exist_ok=True)
+    log_dir = resolve_path(config, "log_dir")
+    ensure_dir(log_dir)
     log_file = os.path.join(log_dir, "app.log")
+    app_log_level = parse_log_level(config.get("log_level"))
+    holdings_md_path = resolve_path(config, "holdings_md")
+    summary_log_dir = os.path.dirname(holdings_md_path) or project_root()
+    ensure_dir(summary_log_dir)
+    summary_log_file = os.path.join(summary_log_dir, ".portfolio_ocr_watch.log")
 
     logger = logging.getLogger("portfolio_ocr")
-    logger.setLevel(logging.INFO)
-    logger.handlers = []
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
 
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(app_log_level)
     file_handler.setFormatter(formatter)
 
-    logger.addHandler(stream_handler)
+    summary_handler = RotatingFileHandler(
+        summary_log_file,
+        maxBytes=2 * 1024 * 1024,
+        backupCount=1,
+        encoding="utf-8",
+    )
+    summary_handler.setLevel(logging.INFO)
+    summary_handler.setFormatter(formatter)
+    summary_handler.addFilter(SummaryLogFilter())
+
     logger.addHandler(file_handler)
+    logger.addHandler(summary_handler)
     return logger
 
 
 def setup_project(config: Dict[str, Any], logger: logging.Logger) -> None:
-    watch_dir = _resolve_path(config, "watch_dir")
-    archive_dir = _resolve_path(config, "archive_dir")
-    log_dir = _resolve_path(config, "log_dir")
-    md_path = _resolve_path(config, "holdings_md")
-    csv_path = _resolve_path(config, "holdings_csv")
-    state_path = _resolve_path(config, "state_file")
+    watch_dir = resolve_path(config, "watch_dir")
+    archive_dir = resolve_path(config, "archive_dir")
+    log_dir = resolve_path(config, "log_dir")
+    md_path = resolve_path(config, "holdings_md")
+    csv_path = resolve_path(config, "holdings_csv")
+    state_path = resolve_path(config, "state_file")
     history_path = os.path.join(log_dir, "ocr_history.md")
-    data_dir = _resolve_path(config, "data_dir")
-    chart_dir = _resolve_path(config, "chart_dir")
+    data_dir = resolve_path(config, "data_dir")
+    chart_dir = resolve_path(config, "chart_dir")
     transactions_path = os.path.join(data_dir, "transactions.json")
     daily_ops_path = os.path.join(data_dir, "daily_ops.csv")
 
-    os.makedirs(watch_dir, exist_ok=True)
-    os.makedirs(archive_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(chart_dir, exist_ok=True)
+    ensure_dir(watch_dir)
+    ensure_dir(archive_dir)
+    ensure_dir(log_dir)
+    ensure_dir(data_dir)
+    ensure_dir(chart_dir)
 
     if not os.path.exists(md_path):
         with open(md_path, "w", encoding="utf-8") as f:
@@ -109,10 +156,10 @@ def setup_project(config: Dict[str, Any], logger: logging.Logger) -> None:
 
 
 def reset_project_data(config: Dict[str, Any], logger: logging.Logger) -> None:
-    md_path = _resolve_path(config, "holdings_md")
-    csv_path = _resolve_path(config, "holdings_csv")
-    state_path = _resolve_path(config, "state_file")
-    history_path = os.path.join(_resolve_path(config, "log_dir"), "ocr_history.md")
+    md_path = resolve_path(config, "holdings_md")
+    csv_path = resolve_path(config, "holdings_csv")
+    state_path = resolve_path(config, "state_file")
+    history_path = os.path.join(resolve_path(config, "log_dir"), "ocr_history.md")
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("# 当前持仓\n\n暂无持仓数据。\n")
@@ -156,7 +203,7 @@ def main() -> None:
     if args.test:
         image_path = args.test
         if not os.path.isabs(image_path):
-            image_path = os.path.join(get_project_root(), image_path)
+            image_path = os.path.join(project_root(), image_path)
         if not os.path.exists(image_path):
             logger.error("测试图片不存在: %s", image_path)
             return
