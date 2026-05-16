@@ -18,6 +18,9 @@ state_file: "/path/to/your/state.json" # 状态文件，记录已处理截图的
 archive_max: 30
 # 扫描间隔（秒）
 scan_interval: 10
+# 详细日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL
+# 只影响 logs/app.log，不影响摘要日志 .portfolio_ocr_watch.log
+log_level: "DEBUG"
 
 # 交易追踪与图表
 data_dir: "data"

@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict
 
 import yaml
@@ -12,6 +13,38 @@ from extractor import extract_from_image
 from portfolio import DAILY_OPS_HEADERS, clear_all_portfolio_data
 from watcher import process_new_images, run_watch_loop
 from paths import ensure_dir, project_root, resolve_path
+
+
+class SummaryLogFilter(logging.Filter):
+    INFO_PREFIXES = (
+        "开始监控目录",
+        "持仓已更新",
+        "识别结果已标记待确认",
+        "OCR失败，保留文件待重试",
+        "本轮处理完成，共处理新截图",
+        "监控已停止",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        message = record.getMessage()
+        return any(message.startswith(prefix) for prefix in self.INFO_PREFIXES)
+
+
+def parse_log_level(value: Any, *, default: str = "DEBUG") -> int:
+    level_name = str(value or default).strip().upper()
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    if level_name not in level_map:
+        supported = ", ".join(level_map)
+        raise ValueError(f"log_level 配置无效: {value!r}，支持: {supported}")
+    return level_map[level_name]
 
 
 def load_config() -> Dict[str, Any]:
@@ -28,6 +61,7 @@ def load_config() -> Dict[str, Any]:
     data.setdefault("chart_dir", "charts")
     data.setdefault("nav_confirm_hour", 21)
     data.setdefault("delta_threshold", 10)
+    data.setdefault("log_level", "DEBUG")
     return data
 
 
@@ -35,21 +69,42 @@ def init_logger(config: Dict[str, Any]) -> logging.Logger:
     log_dir = resolve_path(config, "log_dir")
     ensure_dir(log_dir)
     log_file = os.path.join(log_dir, "app.log")
+    app_log_level = parse_log_level(config.get("log_level"))
+    holdings_md_path = resolve_path(config, "holdings_md")
+    summary_log_dir = os.path.dirname(holdings_md_path) or project_root()
+    ensure_dir(summary_log_dir)
+    summary_log_file = os.path.join(summary_log_dir, ".portfolio_ocr_watch.log")
 
     logger = logging.getLogger("portfolio_ocr")
-    logger.setLevel(logging.INFO)
-    logger.handlers = []
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
 
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(app_log_level)
     file_handler.setFormatter(formatter)
 
-    logger.addHandler(stream_handler)
+    summary_handler = RotatingFileHandler(
+        summary_log_file,
+        maxBytes=2 * 1024 * 1024,
+        backupCount=1,
+        encoding="utf-8",
+    )
+    summary_handler.setLevel(logging.INFO)
+    summary_handler.setFormatter(formatter)
+    summary_handler.addFilter(SummaryLogFilter())
+
     logger.addHandler(file_handler)
+    logger.addHandler(summary_handler)
     return logger
 
 

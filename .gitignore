@@ -1,6 +1,8 @@
 screenshots/
 temp/
+# OCR runtime logs and local retired log archives
 logs/
+logs/_retired/
 data/
 charts/
 state.json
@@ -16,6 +18,7 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+*.log.disabled
 *.swp
 *.swo
 Thumbs.db
